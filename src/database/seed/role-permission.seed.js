@@ -90,8 +90,11 @@ const ROLE_PERMISSION_KEYS = {
     "result:create",
     "result:update",
     "result:read",
+    // Library members: browse the catalog + see their OWN loans/fines (scoped in the service layer).
+    "library:read",
+    "library:list",
   ],
-  STAFF: ["routine:read", "notification:read"],
+  STAFF: ["routine:read", "notification:read", "library:read", "library:list"],
   LIBRARIAN: ["library:create", "library:read", "library:update", "library:list"],
   STUDENT: [
     "routine:read",
@@ -101,6 +104,8 @@ const ROLE_PERMISSION_KEYS = {
     "academic:read",
     "enrollment:read",
     "user:update", // limited profile self-update, enforced at service layer
+    "library:read",
+    "library:list",
   ],
   GUARDIAN: [
     "student:read",

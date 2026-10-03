@@ -46,3 +46,9 @@ export const generateInvoiceNumber = async () => {
   const seq = await nextSequence(`invoice-${year}`);
   return `INV-${year}-${pad(seq)}`;
 };
+
+export const generateBookBarcode = async () => {
+  // Global (not per-year) — a physical barcode label must never repeat or reset.
+  const seq = await nextSequence("book-barcode");
+  return `BK-${pad(seq, 6)}`;
+};

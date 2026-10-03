@@ -30,12 +30,19 @@ import * as feeStructureService from "../../modules/fee-structure/feeStructure.s
 import * as studentFeeService from "../../modules/student-fee/studentFee.service.js";
 import * as paymentService from "../../modules/payment/payment.service.js";
 import * as expenseService from "../../modules/expense/expense.service.js";
+import * as bookService from "../../modules/book/book.service.js";
+import * as bookIssueService from "../../modules/book-issue/bookIssue.service.js";
+import { bookCategoryService } from "../../modules/book-category/bookCategory.crud.js";
+import { authorService } from "../../modules/author/author.crud.js";
+import { publisherService } from "../../modules/publisher/publisher.crud.js";
+import BookCopy from "../../modules/book-copy/bookCopy.model.js";
+import BookIssue from "../../modules/book-issue/bookIssue.model.js";
 
 dotenv.config();
 
 // ---------------------------------------------------------------------------
 // This script populates REALISTIC, LINKED sample data across every module
-// built so far (Phases 1-8), so the app is immediately explorable after a
+// built so far (Phases 1-9), so the app is immediately explorable after a
 // fresh install instead of being empty. It assumes the structural seeds
 // (roles, rooms, academic structure, periods, super admin) have already run
 // — run `yarn seed` first if you haven't.
@@ -478,6 +485,100 @@ const run = async () => {
     expensesCreated += 1;
   }
   logger.info(`Ensured ${expensesCreated} demo expenses recorded.`);
+
+  // ---------------------------------------------------------------------------
+  // 9. LIBRARY — catalog + copies, then a scripted spread of issue/return states
+  // ---------------------------------------------------------------------------
+  // Everything below goes through the REAL services (issue/return/fine flows), so
+  // this section doubles as an end-to-end test of the Phase 9 transactions.
+  const findOrCreateLookup = async (svc, Model, payload) => {
+    const existing = await Model.findOne({ name: payload.name, isDeleted: false });
+    return existing || svc.create(payload, superAdmin._id);
+  };
+  const BookModel = mongoose.model("Book");
+
+  const demoCategories = {};
+  for (const name of ["Textbook", "Science", "Fiction", "Reference", "Biography"]) {
+    demoCategories[name] = await findOrCreateLookup(bookCategoryService, mongoose.model("BookCategory"), { name });
+  }
+  const demoAuthors = {};
+  for (const name of ["Dr. Anwar Hossain", "Nasrin Sultana", "Humayun Ahmed", "Rafiq Uddin", "Selina Rahman"]) {
+    demoAuthors[name] = await findOrCreateLookup(authorService, mongoose.model("Author"), { name });
+  }
+  const demoPublisher = await findOrCreateLookup(publisherService, mongoose.model("Publisher"), {
+    name: "National Curriculum Press",
+  });
+
+  const demoBooks = [
+    { title: "Mathematics - Class 6", isbn: "9780000000101", cat: "Textbook", author: "Dr. Anwar Hossain", price: 220, copies: 4, shelf: "Shelf A1" },
+    { title: "General Science - Class 6", isbn: "9780000000102", cat: "Science", author: "Nasrin Sultana", price: 240, copies: 4, shelf: "Shelf A2" },
+    { title: "Bangla Literature Reader", isbn: "9780000000103", cat: "Fiction", author: "Humayun Ahmed", price: 180, copies: 3, shelf: "Shelf B1" },
+    { title: "Oxford Student Dictionary", isbn: "9780000000104", cat: "Reference", author: "Rafiq Uddin", price: 650, copies: 2, shelf: "Reference Desk" },
+    { title: "Lives of Great Scientists", isbn: "9780000000105", cat: "Biography", author: "Selina Rahman", price: 300, copies: 3, shelf: "Shelf C2" },
+  ];
+
+  const libraryBooks = [];
+  let booksCreated = 0;
+  for (const b of demoBooks) {
+    let book = await BookModel.findOne({ isbn: b.isbn, isDeleted: false });
+    if (!book) {
+      book = await bookService.createBook(
+        {
+          title: b.title,
+          isbn: b.isbn,
+          categoryId: demoCategories[b.cat]._id,
+          authorIds: [demoAuthors[b.author]._id],
+          publisherId: demoPublisher._id,
+          shelfLocation: b.shelf,
+          price: b.price,
+          publishedYear: 2024,
+          initialCopies: b.copies,
+        },
+        superAdmin._id
+      );
+      booksCreated += 1;
+    }
+    libraryBooks.push(book);
+  }
+  logger.info(`Ensured ${libraryBooks.length} library books (${booksCreated} newly created, with copies).`);
+
+  // Only script loans if none exist yet, so re-runs don't stack extra loans on the same copies.
+  if ((await BookIssue.countDocuments()) === 0 && enrolledStudents.c6.length >= 5) {
+    const availableCopy = async (book) => BookCopy.findOne({ bookId: book._id, status: "AVAILABLE", isDeleted: false }).sort("barcode");
+    const borrowerOf = (i) => enrolledStudents.c6[i].student.userId;
+    const backdate = async (issueId, dueDaysAgo) =>
+      // Simulation only: real loans can't be backdated via the API, but a demo needs overdue examples.
+      BookIssue.updateOne({ _id: issueId }, { $set: { dueDate: daysAgo(dueDaysAgo), issueDate: daysAgo(dueDaysAgo + 14) } });
+
+    // 0: healthy active loan
+    let issued = await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[0])).barcode, borrowerId: borrowerOf(0) }, superAdmin._id);
+
+    // 1: OVERDUE active loan (still out, 5 days late)
+    issued = await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[1])).barcode, borrowerId: borrowerOf(1) }, superAdmin._id);
+    await backdate(issued._id, 5);
+
+    // 2: returned on time (clean history)
+    issued = await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[2])).barcode, borrowerId: borrowerOf(2) }, superAdmin._id);
+    await bookIssueService.returnBook(issued._id, { condition: "GOOD" }, superAdmin._id);
+
+    // 3: returned 6 days late -> real OVERDUE fine computed by the service (left PENDING)
+    issued = await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[4])).barcode, borrowerId: borrowerOf(3) }, superAdmin._id);
+    await backdate(issued._id, 6);
+    await bookIssueService.returnBook(issued._id, { condition: "GOOD" }, superAdmin._id);
+
+    // 4: returned damaged with a damage fine (copy becomes DAMAGED)
+    issued = await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[3])).barcode, borrowerId: borrowerOf(4) }, superAdmin._id);
+    await bookIssueService.returnBook(issued._id, { condition: "DAMAGED", damageFine: 100, remarks: "Torn cover (demo)." }, superAdmin._id);
+
+    // A teacher borrows too (longer loan period)
+    if (teachers.length) {
+      await bookIssueService.issueBook({ barcode: (await availableCopy(libraryBooks[0])).barcode, borrowerId: teachers[0].userId }, superAdmin._id);
+    }
+    logger.info("Ensured demo library loans: 1 active, 1 overdue, 1 clean return, 1 late return (fine), 1 damaged return (fine), 1 teacher loan.");
+    logger.info("Note: student 4 (damaged) and student 3 (late) now have PENDING fines and are blocked from new loans until settled - by design.");
+  } else {
+    logger.info("Library loans already exist - skipping scripted loan history.");
+  }
 
   // ---------------------------------------------------------------------------
   logger.info("\n✅ Demo data seeding complete.");

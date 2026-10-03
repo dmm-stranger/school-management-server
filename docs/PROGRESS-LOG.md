@@ -775,11 +775,117 @@ fix an already-expired session sitting in the browser.
 
 ---
 
-## Next Up — Phase 9: Library
+## Phase 9: Library — Complete
 
-Per `16-library.md` + `28-roadmap.md`: book catalog, categories/authors/publishers, individually-
-tracked book copies, issue/return flow, and fine calculation for overdue books. **Build this
-phase's frontend using the new TanStack Query hooks pattern from the start** (see the
-`.queries.ts` files added above for the pattern to follow), not the old manual-fetch pattern.
+`16-library.md` was not available in this environment, so this phase was built from
+`BACKEND-WORKING-FLOW.md` §10 (the Library Flow section) and `28-roadmap.md`'s one-line summary,
+plus the established conventions from Phases 1–8 (soft delete, Zod validation, transactional
+money/stock movements, `.queries.ts` TanStack hooks). **Re-read this phase against the real
+`16-library.md` once it's available** — the interpretations below are the most likely gaps.
 
-Relevant spec docs to re-read before starting: `16-library.md`.
+### Backend — 9 new modules, 41 routes
+
+- **Catalog lookups** (`book-category`, `author`, `publisher`): identical CRUD shape, so built
+  once as a `createLookupCrud` factory (`shared/lookupCrud.js`) rather than copy-pasted three
+  times. Case-insensitive unique name; delete is blocked while any book still references the
+  record (`countInUse`), matching the Phase 3–8 pattern of never deleting a referenced record out
+  from under its dependents.
+- **Book** (`book`): title/ISBN/category/author(s)/publisher/shelf/price. ISBN unique only among
+  non-deleted books (partial index), so a soft-deleted book never blocks re-cataloguing the same
+  ISBN. `initialCopies` creates the book and its first `BookCopy` rows in one transaction.
+- **BookCopy** (`book-copy`): each physical copy gets its own barcode (`BK-000001`, global
+  sequence — a label printed on a physical book must never repeat or reset, unlike the per-year
+  IDs used elsewhere). Status: `AVAILABLE / ISSUED / LOST / DAMAGED / MAINTENANCE / RETIRED`.
+  `ISSUED` can only be set by the issue flow, never by hand.
+- **BookIssue** (`book-issue`) — the core of this phase:
+  - A partial unique index on `{ copyId: 1 }` where `status: "ISSUED"` makes "one copy, one
+    borrower at a time" a database-level guarantee, not just application logic.
+  - `issueBook`/`returnBook`/`renewBook` all run inside `withTransaction` (new shared helper,
+    `shared/withTransaction.js`) — copy status + issue record (+ fine + Transaction + Receipt on
+    return) move together or not at all, same reasoning as Finance's payment flow in Phase 8.
+  - **OVERDUE is deliberately not a stored status.** It's derived on every read as
+    `status === "ISSUED" && dueDate < now` (`utils/library.util.js`), so it can never go stale
+    between nightly jobs — same reasoning as the attendance-summary computed-on-read pattern from
+    Phase 7.
+  - Due date = end of the loan day in UTC, not midnight at its start, so a same-day return is
+    never wrongly flagged overdue (`endOfDayUTC` in `utils/library.util.js`, unit tested).
+  - Fine = overdue days × `finePerDay`, optionally capped at `maxFinePerIssue`. Lost-book penalty
+    uses the book's `price` when known and enabled, else a flat fallback — both configurable.
+  - The borrower snapshot (`name`, `code`, `profileId`) is copied onto the issue record at issue
+    time, same reasoning as Finance's immutable snapshots: deleting or renaming a student/teacher
+    must never corrupt past loan history.
+  - A borrower's own eligibility (`getBorrowerStatus`) is one function used by *both* the issue
+    desk (to show reasons before scanning) and `issueBook` (to enforce them) — they can't drift
+    out of sync with each other.
+- **LibraryFine** (`library-fine`): `OVERDUE / DAMAGED / LOST`, `PENDING / PAID / WAIVED`. Paying
+  a fine creates a `Transaction` (INCOME) and a `Receipt` with `referenceType: "LIBRARY_FINE"` in
+  the same transaction, reusing Finance's existing models — added `"LIBRARY_FINE"` to both
+  enums rather than building a parallel payment record type. Waiving is a recorded decision
+  (`waivedBy`/`waivedAt`/`waiveReason`), never a deletion, same as every other financial record.
+- **LibrarySetting** (`library-setting`): a singleton collection (`key: "default"`), created now
+  because Issue/Return can't run without borrow limits. Interpreted defaults — **please confirm
+  against the real spec**: Students 3 books / 14 days, Teachers 5 / 30, Staff 3 / 14, ৳5/day fine,
+  2 renewals, lost-book charge = book price when known else a flat ৳500. All configurable via
+  `PATCH /library-settings`, restricted to `settings:update` (Super Admin only), matching how
+  every other `*Settings` collection in `BACKEND-WORKING-FLOW.md` §15 is gated.
+- **LibrarySummary** (`library-summary`): computed on read (titles, copies by status, active/
+  overdue loans, today's issued/returned, pending fine total, most-borrowed in the last 30 days)
+  — same "never materialize a counter that can drift" reasoning as attendance-summary.
+- **RBAC**: `STUDENT`/`TEACHER`/`STAFF` roles gained `library:read` + `library:list` (browse the
+  catalog, see their *own* loans/fines only — enforced in the service layer, not just the route).
+  `LIBRARIAN` already had `library:create/read/update/list`; it deliberately does **not** have
+  `library:delete` or `library:approve` (waiving a fine), matching the existing pattern that
+  Librarian can run circulation day-to-day but Admin/Super Admin approve money being forgiven or
+  catalog records being removed.
+- **Demo seed**: extended `demo-data.seed.js` with 5 catalog books (with copies) and 6 scripted
+  loans run through the *real* services — 1 active, 1 overdue (active), 1 clean return, 1 late
+  return (real computed fine, left pending), 1 damaged return (with a fine), 1 teacher loan. This
+  doubles as an end-to-end smoke test of the transactional issue/return/fine code path.
+
+**Verified:** `node --test` — 9 unit tests covering the due-date/overdue/fine-cap math (the exact
+boundary: due day itself is NOT overdue, 1ms past it IS) and every new Zod schema. A route-loading
+script confirmed all 41 routes register and that every static route (`/my`, `/overdue`,
+`/borrowers/search`, `/barcode/:barcode`) is declared before its sibling `/:id`, so Express can't
+swallow it. **Not yet verified:** a live run against real MongoDB — no `mongod` is available in
+this sandbox. Run `yarn seed:roles && yarn seed:demo` locally before relying on this phase; that
+exercises every transaction (issue/return/renew/fine) for real.
+
+### Frontend — 7 new pages, TanStack Query throughout (per the Phase 8 commitment)
+
+- `/library` — catalog, searchable/filterable by category and availability; KPI strip for
+  managers (titles, copies available, overdue, unpaid fines) linking into the relevant page.
+- `/library/books/new`, `/library/books/[id]` — add a book (with initial copies), view/edit, add
+  more copies, change an individual copy's status, soft-delete (blocked while any copy is out).
+- `/library/issues` — the circulation desk: borrower search → live eligibility check (reasons
+  shown *before* scanning, backed by `getBorrowerStatus`) → barcode → issue; loans list with
+  Active/Overdue/Returned/All tabs, renew, and a return modal (condition + optional damage fine,
+  surfaces the fine that gets recorded).
+- `/library/fines` — pending/paid/waived list; `Collect` records a payment (method + receipt),
+  `Waive` requires a reason and is only shown to users with `library:approve`.
+- `/library/my` — self-service loan history for students/teachers/staff (their own records only;
+  enforced server-side, not just hidden client-side).
+- `/library/setup` — tabbed CRUD for categories/authors/publishers, one shared form component.
+- `/library/settings` — borrow limits, fine rate/cap, renewals, lost-book rule; read-only unless
+  the viewer has `settings:update`.
+- `usePermission()` (new shared hook) mirrors the backend's flattened permission list for
+  show/hide only — every rule it mirrors is still enforced server-side.
+- Sidebar: added as flat sibling items (`Library`, `Issue / Return`, `Library Fines`,
+  `My Library`), matching the existing Fee Structures / Student Fees / Expenses pattern — **not**
+  nested under a parent, because `Sidebar.tsx` doesn't render `NavItem.children` for any item
+  today. Setup and Settings are one level deeper and reached from the Library page's header
+  instead of cluttering the sidebar further.
+- Librarian dashboard (`/dashboard/librarian`) now shows real KPIs from `/library-summary`
+  instead of placeholder dashes.
+
+**Verified:** `tsc --noEmit` clean, `eslint` clean on every new/changed file, and a full
+`next build` succeeded — all 44 routes (37 prior + 7 new Library pages) compiled, typed, and
+statically generated with zero errors.
+
+---
+
+## Next Up — Phase 10: Transport
+
+Per `BACKEND-WORKING-FLOW.md` §22: vehicles, drivers, routes, ordered stops, student assignments,
+and transport fees (reusing the Finance module, same as Library's fines did). The relevant spec
+doc (`17-transport.md` or similar) was not available in this environment either — re-read it
+first if it becomes available, otherwise expect the same interpret-and-flag approach used here.

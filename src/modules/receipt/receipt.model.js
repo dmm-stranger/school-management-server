@@ -6,7 +6,7 @@ const receiptSchema = new mongoose.Schema(
     referenceType: {
       type: String,
       required: true,
-      enum: ["STUDENT_FEE_PAYMENT", "SALARY_PAYMENT"],
+      enum: ["STUDENT_FEE_PAYMENT", "SALARY_PAYMENT", "LIBRARY_FINE"],
     },
     referenceId: { type: mongoose.Schema.Types.ObjectId, required: true },
     amount: { type: Number, required: true, min: 0 },

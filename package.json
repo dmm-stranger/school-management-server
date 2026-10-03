@@ -14,7 +14,8 @@
     "seed:periods": "node src/database/seed/period.seed.js",
     "seed": "yarn seed:roles && yarn seed:admin && yarn seed:rooms && yarn seed:academic && yarn seed:periods",
     "seed:demo": "node src/database/seed/demo-data.seed.js",
-    "test": "echo \"Tests not configured yet\" && exit 0"
+    "test": "node --test tests/*.test.mjs",
+    "verify:routes": "node scripts/verify-routes.mjs"
   },
   "keywords": [
     "school",

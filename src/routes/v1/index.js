@@ -33,6 +33,15 @@ import expenseRoutes from "../../modules/expense/expense.routes.js";
 import transactionRoutes from "../../modules/transaction/transaction.routes.js";
 import receiptRoutes from "../../modules/receipt/receipt.routes.js";
 import invoiceRoutes from "../../modules/invoice/invoice.routes.js";
+import bookCategoryRoutes from "../../modules/book-category/bookCategory.routes.js";
+import authorRoutes from "../../modules/author/author.routes.js";
+import publisherRoutes from "../../modules/publisher/publisher.routes.js";
+import bookRoutes from "../../modules/book/book.routes.js";
+import bookCopyRoutes from "../../modules/book-copy/bookCopy.routes.js";
+import bookIssueRoutes from "../../modules/book-issue/bookIssue.routes.js";
+import libraryFineRoutes from "../../modules/library-fine/libraryFine.routes.js";
+import librarySettingRoutes from "../../modules/library-setting/librarySetting.routes.js";
+import librarySummaryRoutes from "../../modules/library-summary/librarySummary.routes.js";
 
 const router = Router();
 
@@ -69,9 +78,18 @@ router.use("/expenses", expenseRoutes);
 router.use("/transactions", transactionRoutes);
 router.use("/receipts", receiptRoutes);
 router.use("/invoices", invoiceRoutes);
+router.use("/book-categories", bookCategoryRoutes);
+router.use("/authors", authorRoutes);
+router.use("/publishers", publisherRoutes);
+router.use("/books", bookRoutes);
+router.use("/book-copies", bookCopyRoutes);
+router.use("/book-issues", bookIssueRoutes);
+router.use("/library-fines", libraryFineRoutes);
+router.use("/library-settings", librarySettingRoutes);
+router.use("/library-summary", librarySummaryRoutes);
 
 // Health check for the v1 API surface.
-// Remaining module routers (library, transport, hostel, ...) will be
+// Remaining module routers (transport, hostel, ...) will be
 // mounted here in later phases.
 router.get("/health", (req, res) => {
   res
