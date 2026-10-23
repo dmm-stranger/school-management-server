@@ -42,6 +42,13 @@ import bookIssueRoutes from "../../modules/book-issue/bookIssue.routes.js";
 import libraryFineRoutes from "../../modules/library-fine/libraryFine.routes.js";
 import librarySettingRoutes from "../../modules/library-setting/librarySetting.routes.js";
 import librarySummaryRoutes from "../../modules/library-summary/librarySummary.routes.js";
+import driverRoutes from "../../modules/driver/driver.routes.js";
+import vehicleRoutes from "../../modules/vehicle/vehicle.routes.js";
+import transportRouteRoutes from "../../modules/transport-route/transportRoute.routes.js";
+import transportStopRoutes from "../../modules/transport-stop/transportStop.routes.js";
+import transportAssignmentRoutes from "../../modules/transport-assignment/transportAssignment.routes.js";
+import transportFeeRoutes from "../../modules/transport-fee/transportFee.routes.js";
+import transportSummaryRoutes from "../../modules/transport-summary/transportSummary.routes.js";
 
 const router = Router();
 
@@ -87,9 +94,16 @@ router.use("/book-issues", bookIssueRoutes);
 router.use("/library-fines", libraryFineRoutes);
 router.use("/library-settings", librarySettingRoutes);
 router.use("/library-summary", librarySummaryRoutes);
+router.use("/drivers", driverRoutes);
+router.use("/vehicles", vehicleRoutes);
+router.use("/transport-routes", transportRouteRoutes);
+router.use("/transport-stops", transportStopRoutes);
+router.use("/transport-assignments", transportAssignmentRoutes);
+router.use("/transport-fees", transportFeeRoutes);
+router.use("/transport-summary", transportSummaryRoutes);
 
 // Health check for the v1 API surface.
-// Remaining module routers (transport, hostel, ...) will be
+// Remaining module routers (hostel, ...) will be
 // mounted here in later phases.
 router.get("/health", (req, res) => {
   res

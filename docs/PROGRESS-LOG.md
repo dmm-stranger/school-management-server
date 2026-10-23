@@ -883,9 +883,123 @@ statically generated with zero errors.
 
 ---
 
-## Next Up — Phase 10: Transport
+## Phase 10: Transport — Complete
 
-Per `BACKEND-WORKING-FLOW.md` §22: vehicles, drivers, routes, ordered stops, student assignments,
-and transport fees (reusing the Finance module, same as Library's fines did). The relevant spec
-doc (`17-transport.md` or similar) was not available in this environment either — re-read it
-first if it becomes available, otherwise expect the same interpret-and-flag approach used here.
+No `17-transport.md` (or similar) spec doc was available, same situation as Library. Built from
+`BACKEND-WORKING-FLOW.md` §11 (the Transport Flow section — Vehicle + Driver → Route → ordered
+Stops → Assignment (one ACTIVE per student) → Fee generated from the route) plus the established
+Phase 1–9 conventions. **Re-read this phase against the real spec once it's available** — the
+interpretations below are the most likely gaps.
+
+### Backend — 9 new modules, 32 routes
+
+- **Driver** (`driver`): standalone, not a Staff sub-type — a driver carries license data
+  (number, expiry) that no other Staff designation needs, and not every school pays its drivers
+  through payroll in this system. `staffId` is an optional link for schools that do. License
+  number unique among non-deleted drivers; delete blocked while assigned to an active vehicle.
+- **Vehicle** (`vehicle`): registration number, type, seat capacity, optional driver. **A driver
+  can't be double-booked** (flow doc, explicit rule): assigning a driver to a second active
+  vehicle is rejected with the conflicting vehicle named. Reducing `seatCapacity` below the
+  vehicle's current active-assignment count is rejected rather than silently overbooking it.
+- **TransportRoute** (`transport-route`): one vehicle per route, a fee + frequency
+  (`MONTHLY`/`TERM`/`ANNUAL`) that assignments snapshot at creation time. Delete blocked while
+  any student is actively assigned.
+- **TransportStop** (`transport-stop`): ordered stops per route (`sequence`), unique position per
+  route. A transactional `reorderStops` (two-pass negative-then-positive sequence write, inside
+  `withTransaction`) handles drag-and-drop reordering without ever colliding with the unique
+  `(routeId, sequence)` index mid-swap — the same "move everything together or not at all"
+  reasoning as Library's book issue/return.
+- **TransportAssignment** (`transport-assignment`) — the core of this phase:
+  - **One ACTIVE assignment per student** (flow doc, explicit rule): enforced by a partial
+    unique index on `{ studentId: 1 }` where `status: "ACTIVE"`, not just application logic.
+  - **A vehicle can never exceed its seat capacity** (flow doc, explicit rule): the active-seat
+    count is checked *inside* the same transaction as the insert (`withTransaction`), immediately
+    before creating the assignment — closing the race where two simultaneous assignments both
+    read "one seat left" and both try to take it. Same pattern as Library's copy-claim race guard.
+  - **"Transport Fee generated from the assigned route"** (flow doc, explicit rule): creating an
+    assignment creates exactly one `TransportFee` in the same transaction, snapshotting the
+    route's fee amount — a later fee change on the route never rewrites a student's already-owed
+    amount, same snapshot reasoning as Library's borrower-name snapshot on `BookIssue`.
+  - Ending an assignment frees the seat but leaves any already-generated fee owed — the service
+    was rendered. **Interpretation, please confirm:** this phase generates one fee per
+    assignment (a single lump sum), not a recurring monthly auto-billing job — true recurring
+    billing would need scheduled-job infrastructure this codebase doesn't have yet (no cron/queue
+    module exists in Phases 1–9). Flagging this as the most likely real gap against the actual
+    spec.
+- **TransportFee** (`transport-fee`): unlike Library's fines (pay-in-full-or-waive),
+  `TransportFee` **supports partial payment** — `amount`/`paidAmount`/`dueAmount` fields, status
+  moves `PENDING → PARTIAL → PAID` as payments land, each payment creates a `Transaction`
+  (INCOME) + `Receipt` with `referenceType: "TRANSPORT_FEE"` in the same transaction (added to
+  both enums, same as Library's `LIBRARY_FINE`). A payment is guarded against a concurrent
+  double-submit via an optimistic `findOneAndUpdate` re-check, same as every other payment flow
+  in this codebase. **Interpretation:** `StudentFee`/`FeeStructure`/`Payment` from Phase 6 are
+  tightly coupled to class/academic-year fee structures and weren't a clean fit for a per-route,
+  cross-class transport charge, so this is a standalone model (reusing only the generic
+  `Transaction`/`Receipt` models), the same choice Library's fines made for the same reason.
+- **TransportSummary** (`transport-summary`): computed on read (vehicle/driver/route counts,
+  active assignments, total vs. filled seats, pending fee total) — same reasoning as every other
+  `*-summary` module in this codebase.
+- **RBAC**: no new role was introduced for transport management. `transport` was already a
+  defined resource in the RBAC seed, so `ADMIN`/`SUPER_ADMIN` already held full `transport:*`
+  access before this phase started. **Interpretation, please confirm:** unlike Library (which got
+  a dedicated `LIBRARIAN` role), there's no existing role name in this codebase suggesting a
+  dedicated transport-manager role was planned, so none was added — Admin runs Transport day to
+  day. `STUDENT` gained `transport:read` + `transport:list` to see their *own* assignment and
+  fees only (enforced in the service layer, matching Library's STUDENT grant).
+- **Demo seed**: extended `demo-data.seed.js` with 2 drivers, 2 vehicles (one deliberately given
+  only 3 seats), 1 route with 3 ordered stops, and 4 scripted assignment attempts run through the
+  *real* services — 3 succeed and fill the vehicle exactly, the 4th is confirmed to be correctly
+  rejected once the vehicle is full, and one of the 3 generated fees is paid in full while the
+  other two are left pending. This doubles as an end-to-end smoke test of the seat-capacity race
+  guard and the fee-generation transaction.
+
+**Verified:** `node --test` — 9 unit tests covering every new Zod schema plus the partial-payment
+and seat-availability arithmetic mirrored from the services. The route-loading script confirmed
+all 32 new routes register (51 models total) and that `/transport-assignments/my` is declared
+before its sibling `/:id`. **Not yet verified:** a live run against real MongoDB — no `mongod` is
+available in this sandbox. Run `yarn seed:roles && yarn seed:demo` locally before relying on this
+phase; that's what exercises the seat-capacity transaction and the fee-generation transaction for
+real, including the "4th assignment correctly rejected" check.
+
+### Frontend — 9 new pages, TanStack Query throughout
+
+- `/transport` — fleet overview with a manager KPI strip (active vehicles, seats filled, active
+  routes, unpaid fees) and a searchable vehicle list.
+- `/transport/vehicles/new`, `/transport/vehicles/[id]` — add a vehicle, then manage its driver
+  assignment and status inline (each select saves immediately, same pattern as a settings toggle).
+- `/transport/drivers` — tabbed-free CRUD list (modal add/edit/delete), same shape as Library's
+  Setup page since drivers are a single flat collection, not three tabs.
+- `/transport/routes`, `/transport/routes/[id]` — create a route, then manage its ordered stops:
+  add/edit/delete a stop, and reorder with up/down controls that call the transactional
+  `reorderStops` endpoint. Shows live seat occupancy for the route's vehicle.
+- `/transport/assignments` — the assignment desk: student search (reusing the existing
+  `useStudents` hook from the Phase 2 People module, extended with a non-breaking `enabled`
+  option so it doesn't fetch the whole student list on every keystroke) → route → stop → assign;
+  live seat-count display before submitting; assignments list with an End action.
+- `/transport/fees` — pending/partial/paid list; `Collect` opens a modal supporting **partial
+  payment** (unlike Library's pay-in-full fines), with a "pay full amount due" shortcut.
+- `/transport/my` — self-service: the student's own route, vehicle, stop, pickup time, and fee
+  history (their own records only; enforced server-side).
+- Sidebar: added as flat sibling items (`Transport`, `Assign Students`, `Transport Fees`,
+  `My Transport`), replacing an old placeholder `Transport` nav entry that pointed nowhere built
+  — same flat-list reasoning as Library's nav additions.
+- No new role-specific dashboard was added (consistent with the "no dedicated transport role"
+  RBAC decision above) — Admin's existing dashboard covers it.
+
+**Verified:** `tsc --noEmit` clean, `eslint` clean on every new/changed file, and a full
+`next build` succeeded — all 53 routes (44 prior + 9 new Transport pages) compiled, typed, and
+statically generated with zero errors.
+
+**Housekeeping note, unrelated to this phase's code:** the frontend repo has a second,
+non-authoritative `src/tsconfig.json` (no path aliases, `strict: false`) alongside the real
+root `tsconfig.json`. It isn't used by `next build` (verified — the build only ever reads the
+root config) and predates this phase, but it's worth deleting at some point to avoid confusing
+an editor or another tool into using it by mistake.
+
+---
+
+## Next Up — Phase 11: Hostel
+
+Per `BACKEND-WORKING-FLOW.md` §12 (the Hostel Flow section) — re-read it first before starting.
+The relevant spec doc was not available in this environment either; expect the same
+interpret-and-flag approach used for Library and Transport.

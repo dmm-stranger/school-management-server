@@ -37,12 +37,22 @@ import { authorService } from "../../modules/author/author.crud.js";
 import { publisherService } from "../../modules/publisher/publisher.crud.js";
 import BookCopy from "../../modules/book-copy/bookCopy.model.js";
 import BookIssue from "../../modules/book-issue/bookIssue.model.js";
+import * as driverService from "../../modules/driver/driver.service.js";
+import * as vehicleService from "../../modules/vehicle/vehicle.service.js";
+import * as routeService from "../../modules/transport-route/transportRoute.service.js";
+import * as stopService from "../../modules/transport-stop/transportStop.service.js";
+import * as transportAssignmentService from "../../modules/transport-assignment/transportAssignment.service.js";
+import * as transportFeeService from "../../modules/transport-fee/transportFee.service.js";
+import Driver from "../../modules/driver/driver.model.js";
+import Vehicle from "../../modules/vehicle/vehicle.model.js";
+import TransportRoute from "../../modules/transport-route/transportRoute.model.js";
+import TransportAssignment from "../../modules/transport-assignment/transportAssignment.model.js";
 
 dotenv.config();
 
 // ---------------------------------------------------------------------------
 // This script populates REALISTIC, LINKED sample data across every module
-// built so far (Phases 1-9), so the app is immediately explorable after a
+// built so far (Phases 1-10), so the app is immediately explorable after a
 // fresh install instead of being empty. It assumes the structural seeds
 // (roles, rooms, academic structure, periods, super admin) have already run
 // — run `yarn seed` first if you haven't.
@@ -578,6 +588,77 @@ const run = async () => {
     logger.info("Note: student 4 (damaged) and student 3 (late) now have PENDING fines and are blocked from new loans until settled - by design.");
   } else {
     logger.info("Library loans already exist - skipping scripted loan history.");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 10. TRANSPORT — drivers, vehicles, a route with stops, then student assignments
+  // ---------------------------------------------------------------------------
+  // Runs through the REAL services, same as Library above — doubles as an end-to-end
+  // test of the seat-capacity claim and the fee-generated-from-route transaction.
+  let driverOne = await Driver.findOne({ licenseNumber: "DL-DEMO-1001" });
+  if (!driverOne) driverOne = await driverService.createDriver(
+    { name: "Abdul Karim", phone: "01711000001", licenseNumber: "DL-DEMO-1001" },
+    superAdmin._id
+  );
+  let driverTwo = await Driver.findOne({ licenseNumber: "DL-DEMO-1002" });
+  if (!driverTwo) driverTwo = await driverService.createDriver(
+    { name: "Josna Begum", phone: "01711000002", licenseNumber: "DL-DEMO-1002" },
+    superAdmin._id
+  );
+
+  let vehicleOne = await Vehicle.findOne({ vehicleNumber: "DHAKA-METRO-GA-1234" });
+  if (!vehicleOne) vehicleOne = await vehicleService.createVehicle(
+    { vehicleNumber: "Dhaka Metro Ga 1234", type: "BUS", seatCapacity: 3, driverId: driverOne._id },
+    superAdmin._id
+  ); // deliberately small capacity so the demo also shows the "vehicle full" rule in action
+  let vehicleTwo = await Vehicle.findOne({ vehicleNumber: "DHAKA-METRO-GA-5678" });
+  if (!vehicleTwo) vehicleTwo = await vehicleService.createVehicle(
+    { vehicleNumber: "Dhaka Metro Ga 5678", type: "MICROBUS", seatCapacity: 10, driverId: driverTwo._id },
+    superAdmin._id
+  );
+  logger.info(`Ensured 2 drivers and 2 vehicles (capacities ${vehicleOne.seatCapacity} and ${vehicleTwo.seatCapacity}).`);
+
+  let routeOne = await TransportRoute.findOne({ name: "Route A - Uttara" });
+  if (!routeOne) {
+    routeOne = await routeService.createRoute(
+      { name: "Route A - Uttara", vehicleId: vehicleOne._id, fee: 1500, feeFrequency: "MONTHLY" },
+      superAdmin._id
+    );
+    await stopService.createStop({ routeId: routeOne._id, name: "Sector 7 Gate", sequence: 1, pickupTime: "07:00" });
+    await stopService.createStop({ routeId: routeOne._id, name: "House Building", sequence: 2, pickupTime: "07:15" });
+    await stopService.createStop({ routeId: routeOne._id, name: "School Gate", sequence: 3, pickupTime: "07:40" });
+  }
+  const routeOneStops = await stopService.listStopsForRoute(routeOne._id);
+  logger.info(`Ensured Route A - Uttara with ${routeOneStops.length} ordered stops.`);
+
+  if ((await TransportAssignment.countDocuments()) === 0 && enrolledStudents.c6.length >= 4) {
+    const assign = (i, stopIdx) =>
+      transportAssignmentService.createAssignment(
+        { studentId: enrolledStudents.c6[i].student._id, routeId: routeOne._id, stopId: routeOneStops[stopIdx]._id },
+        superAdmin._id
+      );
+
+    // Fills the 3-seat vehicle exactly, then proves the 4th assignment is correctly rejected.
+    await assign(0, 0);
+    await assign(1, 1);
+    const third = await assign(2, 2);
+
+    try {
+      await assign(3, 0);
+      logger.warn("Expected the 4th transport assignment to be rejected (vehicle full) but it succeeded.");
+    } catch {
+      logger.info(`Confirmed: ${vehicleOne.vehicleNumber} correctly rejects a 4th student once its 3 seats are full.`);
+    }
+
+    // Pay one of the generated fees in full, leave the others pending — mirrors Library's
+    // "some settled, some outstanding" demo spread.
+    const feesForThird = await transportFeeService.listFeesForStudent(enrolledStudents.c6[2].student._id);
+    if (feesForThird[0]) {
+      await transportFeeService.payTransportFee(feesForThird[0]._id, { amount: feesForThird[0].amount, paymentMethod: "CASH" }, superAdmin._id);
+    }
+    logger.info("Ensured 3 demo transport assignments (seats full) with transport fees generated; 1 fee paid, 2 left pending.");
+  } else {
+    logger.info("Transport assignments already exist - skipping scripted assignment history.");
   }
 
   // ---------------------------------------------------------------------------

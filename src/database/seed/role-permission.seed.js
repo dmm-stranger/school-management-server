@@ -93,6 +93,9 @@ const ROLE_PERMISSION_KEYS = {
     // Library members: browse the catalog + see their OWN loans/fines (scoped in the service layer).
     "library:read",
     "library:list",
+    // Transport: see their OWN assignment + fees only (scoped in the service layer).
+    "transport:read",
+    "transport:list",
   ],
   STAFF: ["routine:read", "notification:read", "library:read", "library:list"],
   LIBRARIAN: ["library:create", "library:read", "library:update", "library:list"],
