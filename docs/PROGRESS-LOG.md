@@ -998,8 +998,126 @@ an editor or another tool into using it by mistake.
 
 ---
 
-## Next Up — Phase 11: Hostel
+## Phase 11: Hostel — Complete
 
-Per `BACKEND-WORKING-FLOW.md` §12 (the Hostel Flow section) — re-read it first before starting.
-The relevant spec doc was not available in this environment either; expect the same
-interpret-and-flag approach used for Library and Transport.
+No Hostel spec doc was available, same as Library and Transport. Built from
+`BACKEND-WORKING-FLOW.md` §12 (Hostel → Rooms → Beds → Warden assigned → Student Allocation (one
+ACTIVE per student, bed can't double-allocate) → Hostel Fee generated, "follows the Finance
+module rules" → permanent Visitor Log) plus Phase 1–10 conventions. **Re-read this phase against
+the real spec once it's available** — the interpretations below are the most likely gaps.
+
+### Backend — 9 new modules, 27 routes
+
+- **Hostel** (`hostel`): name, type (`BOYS`/`GIRLS`/`MIXED`), address, an optional warden, and a
+  fee + frequency that allocations snapshot — same role as Transport's `route.fee`. **Warden
+  assigned to Hostel** (flow doc, explicit rule): modeled as an optional `Staff` reference, not a
+  new entity — unlike Driver, a warden needs no hostel-specific fields of their own. Delete
+  blocked while any student is actively allocated there.
+- **HostelRoom** (`hostel-room`) / **HostelBed** (`hostel-bed`): the same two-level structure as
+  Book/BookCopy — individually tracked beds (not a numeric capacity count) so each one can be
+  claimed, retired or put under maintenance independently. Room number unique per hostel (not
+  globally); bed number unique per room. `OCCUPIED` can only be set by the allocation flow, same
+  `MANUAL_*_STATUSES` pattern as Library's BookCopy and Transport's Vehicle.
+- **HostelAllocation** (`hostel-allocation`) — the core of this phase:
+  - **One ACTIVE allocation per student** + **a bed can't be double-allocated** (flow doc,
+    explicit rules): both enforced by partial unique indexes (`studentId`/`bedId` where
+    `status: "ACTIVE"`), not just application logic — identical reasoning to Transport's
+    assignment uniqueness.
+  - The bed claim happens *inside* the same transaction as the insert
+    (`withTransaction`), immediately before creating the allocation — closing the same
+    same-moment double-claim race that Library's copy claim and Transport's seat claim guard
+    against.
+  - **"Hostel Fee generated"** (flow doc): creating an allocation creates exactly one
+    `HostelFee` in the same transaction, snapshotting the hostel's fee amount — a later fee
+    change on the hostel never rewrites a student's already-owed amount, same snapshot reasoning
+    as Transport's fee-from-route.
+  - **Addition beyond the flow doc's literal text, please confirm:** a `BOYS`/`GIRLS` hostel is
+    checked against the student's gender at allocation time (`MIXED` accepts anyone). The flow
+    doc doesn't say this explicitly, but allocating a student to a hostel of the wrong type felt
+    like exactly the kind of mistake this system should catch rather than silently allow — see
+    `assertGenderMatch` in `hostelAllocation.service.js` if this needs to be removed or loosened.
+  - Ending an allocation frees the bed but leaves any already-generated fee owed — the
+    accommodation was provided, same reasoning as Transport's `endAssignment`.
+- **HostelFee** (`hostel-fee`) — **"follows the Finance module rules"** (flow doc, explicit
+  instruction, stronger wording than Transport's flow doc used). `StudentFee`/`FeeStructure`
+  (Phase 6) are keyed to a mandatory `classId`, which doesn't fit a hostel fee that spans
+  multiple classes — the same reasoning Transport's fee used to justify a standalone model. So
+  this is standalone like Transport's `TransportFee`, but shaped much closer to `StudentFee` to
+  honor "follows the Finance module rules" in substance:
+  - `amount`/`discount`/`fine`/`paidAmount`/`dueAmount` with the identical formula
+    (`amount - discount + fine - paidAmount`, floored at 0) and status derivation
+    (`PENDING`/`PARTIAL`/`PAID`/`CANCELLED`) as `StudentFee`.
+  - An `adjustments[]` audit trail — every discount/fine change is appended with
+    who/when/why, never silently overwritten, mirroring `StudentFee.adjustments` exactly
+    (`PATCH /hostel-fees/:id/adjust`, gated by `hostel:approve` so Warden can't grant discounts
+    without Admin sign-off, same separation as Library's waive).
+  - Payment supports partial amounts and posts a `Transaction` (INCOME) + `Receipt` with
+    `referenceType: "HOSTEL_FEE"` (added to both enums) in the same transaction, guarded against
+    a concurrent double-payment the same way as every other payment flow in this codebase.
+- **HostelVisitor** (`hostel-visitor`) — **"Visitor log tracked separately (permanent record)"**
+  (flow doc, explicit instruction): deliberately **no `isDeleted` field and no delete route
+  anywhere in this module** — the one and only place in this entire codebase where a record is
+  truly undeletable by design, not just soft-deleted. A mistaken entry is corrected by editing
+  it, not removing it (no general-purpose update route was added either, to keep that guarantee
+  simple — only `POST /:id/checkout` exists beyond create and list). Logging a visit requires the
+  student to currently hold an active allocation.
+- **HostelSummary** (`hostel-summary`): computed on read (bed occupancy, active allocations,
+  pending fee total, visitors currently on site) — same reasoning as every other `*-summary`
+  module.
+- **RBAC**: no new role introduced, same decision as Transport — `hostel` was already a defined
+  resource, so `ADMIN`/`SUPER_ADMIN` already held full `hostel:*` access. `STUDENT` gained
+  `hostel:read` + `hostel:list` to see their *own* allocation and fees only (service-layer
+  scoped, matching Library's and Transport's STUDENT grants).
+- **Demo seed**: extended `demo-data.seed.js` with a 2-bed boys hostel and a 2-bed girls hostel,
+  one room each, and 5 scripted allocation attempts through the *real* services — 2 fill the
+  boys room exactly, a 3rd is confirmed rejected (room full), a male student's attempt at the
+  girls hostel is confirmed rejected (gender/type mismatch), 1 girl is correctly allocated, one
+  of the generated fees is paid in full, and a visitor is logged with no checkout yet (so the
+  summary's "visitors on site" count is non-zero). This doubles as an end-to-end smoke test of
+  the bed-capacity race guard, the gender check, and the fee-generation transaction.
+
+**Verified:** `node --test` — 9 unit tests covering every new Zod schema, the fee due/status
+arithmetic mirrored from the service, and the gender/hostel-type match logic. The route-loading
+script confirmed all 27 new routes register (57 models total), that
+`/hostel-allocations/my` is declared before its sibling `/:id`, and — specifically checked,
+given the "permanent record" requirement — that `/hostel-visitors` has no `DELETE` route at all.
+**Not yet verified:** a live run against real MongoDB — no `mongod` is available in this
+sandbox. Run `yarn seed:roles && yarn seed:demo` locally before relying on this phase; that's
+what exercises the bed-capacity and gender-check rejections and the fee-generation transaction
+for real.
+
+### Frontend — 9 new pages, TanStack Query throughout
+
+- `/hostel` — overview with a manager KPI strip (beds filled, active allocations, unpaid fees,
+  visitors on site) and a searchable hostel list.
+- `/hostel/new`, `/hostel/[id]` — create a hostel, then manage its warden (live staff search —
+  added a small new `features/staff` module for this, mirroring the existing `useStudents`
+  pattern exactly) and status, plus inline room/bed management: add a room, expand it to add/
+  remove/retire beds, all without leaving the page.
+- `/hostel/allocations` — the allocation desk: student search (reusing Phase 2's `useStudents`
+  hook) → hostel → room → bed (cascading selects, each narrowing on the previous), with a live
+  allocations list and an End action.
+- `/hostel/fees` — pending/partial/paid list; `Collect` supports **partial payment** like
+  Transport's fees; `Adjust` (shown only to `hostel:approve` holders) opens the
+  discount/fine-with-reason form, matching the backend's audit-trail requirement.
+- `/hostel/visitors` — log a check-in (resident search + visitor details) and check out an
+  on-site visitor; the UI never offers a delete action anywhere on this page, matching the
+  backend's permanent-record guarantee.
+- `/hostel/my` — self-service: the student's own hostel, room, bed, and fee history.
+- Sidebar: added as flat sibling items (`Hostel`, `Allocate Students`, `Hostel Fees`,
+  `Visitor Log`, `My Hostel`), replacing an old placeholder `Hostel` nav entry that pointed
+  nowhere built — same flat-list reasoning as Library's and Transport's nav additions.
+- No new role-specific dashboard was added, same decision as Transport — Admin's existing
+  dashboard covers it.
+
+**Verified:** `tsc --noEmit` clean, `eslint` clean on every new/changed file (one pair of unused
+imports caught and removed), and a full `next build` succeeded — all routes, including the 9 new
+Hostel pages, compiled, typed, and statically generated with zero errors.
+
+---
+
+## Next Up — Phase 12: Notification
+
+Per `BACKEND-WORKING-FLOW.md` §13 (the Notification Flow section) — re-read it first before
+starting. The relevant spec doc was not available in this environment either; expect the same
+interpret-and-flag approach used for Library, Transport and Hostel.

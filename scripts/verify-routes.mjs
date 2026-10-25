@@ -18,7 +18,7 @@ const collect = (stack, prefix = "") => {
   }
   return out;
 };
-const routes = collect(router.stack).filter((r) => /book|author|publisher|library|driver|vehicle|transport/.test(r));
+const routes = collect(router.stack).filter((r) => /book|author|publisher|library|driver|vehicle|transport|hostel/.test(r));
 console.log(routes.join("\n"));
 
 // ordering check: static routes must come before /:id
@@ -33,4 +33,5 @@ const order = (base, statics) => {
 order("/book-issues", ["/my", "/overdue", "/borrowers/search", "/borrowers/:userId/status"]);
 order("/book-copies", ["/barcode/:barcode"]);
 order("/transport-assignments", ["/my"]);
+order("/hostel-allocations", ["/my"]);
 process.exit(0);

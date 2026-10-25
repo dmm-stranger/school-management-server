@@ -44,6 +44,14 @@ import * as stopService from "../../modules/transport-stop/transportStop.service
 import * as transportAssignmentService from "../../modules/transport-assignment/transportAssignment.service.js";
 import * as transportFeeService from "../../modules/transport-fee/transportFee.service.js";
 import Driver from "../../modules/driver/driver.model.js";
+import * as hostelService from "../../modules/hostel/hostel.service.js";
+import * as hostelRoomService from "../../modules/hostel-room/hostelRoom.service.js";
+import * as hostelBedService from "../../modules/hostel-bed/hostelBed.service.js";
+import * as hostelAllocationService from "../../modules/hostel-allocation/hostelAllocation.service.js";
+import * as hostelFeeService from "../../modules/hostel-fee/hostelFee.service.js";
+import * as hostelVisitorService from "../../modules/hostel-visitor/hostelVisitor.service.js";
+import Hostel from "../../modules/hostel/hostel.model.js";
+import HostelAllocation from "../../modules/hostel-allocation/hostelAllocation.model.js";
 import Vehicle from "../../modules/vehicle/vehicle.model.js";
 import TransportRoute from "../../modules/transport-route/transportRoute.model.js";
 import TransportAssignment from "../../modules/transport-assignment/transportAssignment.model.js";
@@ -52,7 +60,7 @@ dotenv.config();
 
 // ---------------------------------------------------------------------------
 // This script populates REALISTIC, LINKED sample data across every module
-// built so far (Phases 1-10), so the app is immediately explorable after a
+// built so far (Phases 1-11), so the app is immediately explorable after a
 // fresh install instead of being empty. It assumes the structural seeds
 // (roles, rooms, academic structure, periods, super admin) have already run
 // — run `yarn seed` first if you haven't.
@@ -659,6 +667,73 @@ const run = async () => {
     logger.info("Ensured 3 demo transport assignments (seats full) with transport fees generated; 1 fee paid, 2 left pending.");
   } else {
     logger.info("Transport assignments already exist - skipping scripted assignment history.");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 11. HOSTEL — a boys and a girls hostel, rooms, beds, allocations, a fee and a visitor
+  // ---------------------------------------------------------------------------
+  // Runs through the REAL services, same as Library and Transport above — doubles as an
+  // end-to-end test of the bed-capacity claim, the gender/hostel-type check, and the
+  // fee-generated-from-hostel transaction.
+  let boysHostel = await Hostel.findOne({ name: "North Hostel (Boys)" });
+  if (!boysHostel) boysHostel = await hostelService.createHostel({ name: "North Hostel (Boys)", type: "BOYS", fee: 3000, feeFrequency: "MONTHLY" }, superAdmin._id);
+  let girlsHostel = await Hostel.findOne({ name: "South Hostel (Girls)" });
+  if (!girlsHostel) girlsHostel = await hostelService.createHostel({ name: "South Hostel (Girls)", type: "GIRLS", fee: 3200, feeFrequency: "MONTHLY" }, superAdmin._id);
+  logger.info(`Ensured 2 demo hostels: ${boysHostel.name} and ${girlsHostel.name}.`);
+
+  let boysRoom = await hostelRoomService.listRoomsForHostel(boysHostel._id).then((r) => r[0]);
+  if (!boysRoom) boysRoom = await hostelRoomService.createRoom({ hostelId: boysHostel._id, roomNumber: "101", floor: "1st" });
+  let boysBeds = await hostelBedService.listBedsForRoom(boysRoom._id);
+  if (boysBeds.length === 0) boysBeds = await hostelBedService.createBeds({ roomId: boysRoom._id, bedNumbers: ["A", "B"] }); // 2 beds only, so the demo can also show "bed full"
+
+  let girlsRoom = await hostelRoomService.listRoomsForHostel(girlsHostel._id).then((r) => r[0]);
+  if (!girlsRoom) girlsRoom = await hostelRoomService.createRoom({ hostelId: girlsHostel._id, roomNumber: "201", floor: "2nd" });
+  let girlsBeds = await hostelBedService.listBedsForRoom(girlsRoom._id);
+  if (girlsBeds.length === 0) girlsBeds = await hostelBedService.createBeds({ roomId: girlsRoom._id, bedNumbers: ["A", "B"] });
+  logger.info(`Ensured 1 room with 2 beds in each hostel.`);
+
+  if ((await HostelAllocation.countDocuments()) === 0 && enrolledStudents.c6.length >= 5) {
+    // c6[0], c6[2], c6[4] are MALE; c6[1], c6[3] are FEMALE (see the student-creation loop above).
+    const male = (i) => enrolledStudents.c6[i].student;
+    const female = (i) => enrolledStudents.c6[i].student;
+
+    // Fills the 2-bed boys room exactly.
+    await hostelAllocationService.createAllocation({ studentId: male(0)._id, roomId: boysRoom._id, bedId: boysBeds[0]._id }, superAdmin._id);
+    await hostelAllocationService.createAllocation({ studentId: male(2)._id, roomId: boysRoom._id, bedId: boysBeds[1]._id }, superAdmin._id);
+
+    try {
+      await hostelAllocationService.createAllocation({ studentId: male(4)._id, roomId: boysRoom._id, bedId: boysBeds[0]._id }, superAdmin._id);
+      logger.warn("Expected a 3rd boys-room allocation to be rejected (room full) but it succeeded.");
+    } catch {
+      logger.info(`Confirmed: ${boysRoom.roomNumber} correctly rejects a 3rd student once its 2 beds are full.`);
+    }
+
+    try {
+      await hostelAllocationService.createAllocation({ studentId: male(4)._id, roomId: girlsRoom._id, bedId: girlsBeds[0]._id }, superAdmin._id);
+      logger.warn("Expected a male student's allocation to a girls hostel to be rejected but it succeeded.");
+    } catch {
+      logger.info(`Confirmed: ${girlsHostel.name} correctly rejects a male student.`);
+    }
+
+    // One girl correctly allocated.
+    await hostelAllocationService.createAllocation({ studentId: female(1)._id, roomId: girlsRoom._id, bedId: girlsBeds[0]._id }, superAdmin._id);
+
+    // Pay one of the generated fees in full, leave the rest pending — same "some settled, some
+    // outstanding" spread as the Library and Transport demo data.
+    const feesForSecondBoy = await hostelFeeService.listFeesForStudent(male(2)._id);
+    if (feesForSecondBoy[0]) {
+      await hostelFeeService.payHostelFee(feesForSecondBoy[0]._id, { amount: feesForSecondBoy[0].amount, paymentMethod: "CASH" }, superAdmin._id);
+    }
+
+    // A visitor currently on site (no checkout yet), so the summary's "visitors on site" count is non-zero.
+    await hostelVisitorService.logVisitor(
+      { studentId: male(0)._id, visitorName: "Mr. Kamal Hossain", relation: "Father", purpose: "Weekly visit" },
+      superAdmin._id
+    );
+
+    logger.info("Ensured 3 demo hostel allocations (boys room full, 1 girl) with hostel fees generated; 1 fee paid, rest pending; 1 visitor on site.");
+  } else {
+    logger.info("Hostel allocations already exist - skipping scripted allocation history.");
   }
 
   // ---------------------------------------------------------------------------

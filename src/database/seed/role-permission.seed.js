@@ -96,6 +96,9 @@ const ROLE_PERMISSION_KEYS = {
     // Transport: see their OWN assignment + fees only (scoped in the service layer).
     "transport:read",
     "transport:list",
+    // Hostel: see their OWN allocation + fees only (scoped in the service layer).
+    "hostel:read",
+    "hostel:list",
   ],
   STAFF: ["routine:read", "notification:read", "library:read", "library:list"],
   LIBRARIAN: ["library:create", "library:read", "library:update", "library:list"],

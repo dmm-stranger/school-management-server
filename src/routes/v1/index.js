@@ -49,6 +49,13 @@ import transportStopRoutes from "../../modules/transport-stop/transportStop.rout
 import transportAssignmentRoutes from "../../modules/transport-assignment/transportAssignment.routes.js";
 import transportFeeRoutes from "../../modules/transport-fee/transportFee.routes.js";
 import transportSummaryRoutes from "../../modules/transport-summary/transportSummary.routes.js";
+import hostelRoutes from "../../modules/hostel/hostel.routes.js";
+import hostelRoomRoutes from "../../modules/hostel-room/hostelRoom.routes.js";
+import hostelBedRoutes from "../../modules/hostel-bed/hostelBed.routes.js";
+import hostelAllocationRoutes from "../../modules/hostel-allocation/hostelAllocation.routes.js";
+import hostelFeeRoutes from "../../modules/hostel-fee/hostelFee.routes.js";
+import hostelVisitorRoutes from "../../modules/hostel-visitor/hostelVisitor.routes.js";
+import hostelSummaryRoutes from "../../modules/hostel-summary/hostelSummary.routes.js";
 
 const router = Router();
 
@@ -101,9 +108,16 @@ router.use("/transport-stops", transportStopRoutes);
 router.use("/transport-assignments", transportAssignmentRoutes);
 router.use("/transport-fees", transportFeeRoutes);
 router.use("/transport-summary", transportSummaryRoutes);
+router.use("/hostels", hostelRoutes);
+router.use("/hostel-rooms", hostelRoomRoutes);
+router.use("/hostel-beds", hostelBedRoutes);
+router.use("/hostel-allocations", hostelAllocationRoutes);
+router.use("/hostel-fees", hostelFeeRoutes);
+router.use("/hostel-visitors", hostelVisitorRoutes);
+router.use("/hostel-summary", hostelSummaryRoutes);
 
 // Health check for the v1 API surface.
-// Remaining module routers (hostel, ...) will be
+// Remaining module routers will be
 // mounted here in later phases.
 router.get("/health", (req, res) => {
   res
